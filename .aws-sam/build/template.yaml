@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Redeban KYC Commerce Lookup
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - staging
+    - prod
+    Description: Environment name
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 1024
+    Runtime: python3.10
+    Environment:
+      Variables:
+        REGION_NAME:
+          Ref: AWS::Region
+        ENVIRONMENT:
+          Ref: Environment
+        LOG_LEVEL: INFO
+Resources:
+  RedebanCommerceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: redeban-commerce-lookup-${Environment}
+      CodeUri: RedebanCommerceFunction
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          DYNAMODB_TABLE:
+            Ref: RedebanTokensTable
+          SECRET_NAME: Redeban_Obtener_Token
+          TOKEN_LAMBDA_NAME: lambda_function_obtener_token
+      Policies:
+      - Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          Resource:
+            Fn::GetAtt:
+            - RedebanTokensTable
+            - Arn
+        - Effect: Allow
+          Action:
+          - secretsmanager:GetSecretValue
+          Resource:
+            Fn::Sub: arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:Redeban_Obtener_Token*
+        - Effect: Allow
+          Action:
+          - lambda:InvokeFunction
+          Resource:
+            Fn::Sub: arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:lambda_function_obtener_token
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /commerce/{merchantId}
+            Method: get
+            RestApiId:
+              Ref: RedebanApi
+    Metadata:
+      SamResourceId: RedebanCommerceFunction
+  RedebanApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name:
+        Fn::Sub: redeban-kyc-api-${Environment}
+      StageName:
+        Ref: Environment
+      Cors:
+        AllowMethods: '''GET, OPTIONS'''
+        AllowHeaders: '''Content-Type,Authorization'''
+        AllowOrigin: '''*'''
+  RedebanTokensTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: RedebanTokens-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+Outputs:
+  ApiUrl:
+    Description: API Gateway URL
+    Value:
+      Fn::Sub: https://${RedebanApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
+  LambdaFunction:
+    Description: Lambda Function ARN
+    Value:
+      Fn::GetAtt:
+      - RedebanCommerceFunction
+      - Arn

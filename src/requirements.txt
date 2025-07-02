@@ -1,0 +1,14 @@
+# AWS SDK con versiones fijas
+boto3==1.26.137
+botocore==1.29.137
+
+# HTTP client
+requests==2.31.0
+
+# Utilidades
+python-dateutil==2.8.2
+
+# Testing (opcional para desarrollo)
+pytest==7.4.0
+pytest-mock==3.11.1
+moto==4.1.14

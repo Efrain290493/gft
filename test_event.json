@@ -1,0 +1,30 @@
+{
+  "pathParameters": {
+    "merchantId": "10203040"
+  },
+  "queryStringParameters": {
+    "includeRawData": "true"
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "X-Request-ID": "test-request-12345"
+  },
+  "httpMethod": "GET",
+  "path": "/commerce/10203040",
+  "resource": "/commerce/{merchantId}",
+  "requestContext": {
+    "requestId": "test-request-12345",
+    "stage": "dev",
+    "httpMethod": "GET",
+    "resourcePath": "/commerce/{merchantId}",
+    "protocol": "HTTP/1.1",
+    "requestTime": "2024-01-15T10:30:00.000Z",
+    "requestTimeEpoch": 1705315800000,
+    "identity": {
+      "sourceIp": "127.0.0.1",
+      "userAgent": "test-agent"
+    }
+  },
+  "isBase64Encoded": false
+}
