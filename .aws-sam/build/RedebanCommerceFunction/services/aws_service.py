@@ -4,8 +4,8 @@ import base64
 import os
 from datetime import datetime, timedelta
 from botocore.exceptions import ClientError
-from src.utils import logger
-logger = logger.setup_logger()
+from utils.logger import setup_logger
+logger = setup_logger()
 
 
 class AWSService:

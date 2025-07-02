@@ -1,12 +1,12 @@
-    import requests
-    import os
-    import time
-    from datetime import datetime
-    from src.utils import logger
-    logger = logger.setup_logger()
+import requests
+import os
+import time
+from datetime import datetime
+from utils.logger import setup_logger
+logger = setup_logger()
 
 
-    class RedebanService:
+class RedebanService:
         """
         Clase que maneja la comunicación con la API de Redeban KYC
         Implementa patrones de retry, timeout y manejo de errores específicos
