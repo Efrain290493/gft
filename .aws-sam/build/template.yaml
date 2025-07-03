@@ -32,8 +32,7 @@ Resources:
       Handler: app.lambda_handler
       Environment:
         Variables:
-          DYNAMODB_TABLE:
-            Ref: RedebanTokensTable
+          DYNAMODB_TABLE: RedebanTokens
           SECRET_NAME: Redeban_Obtener_Token
           TOKEN_LAMBDA_NAME: lambda_function_obtener_token
       Policies:
@@ -44,10 +43,7 @@ Resources:
           - dynamodb:GetItem
           - dynamodb:PutItem
           - dynamodb:UpdateItem
-          Resource:
-            Fn::GetAtt:
-            - RedebanTokensTable
-            - Arn
+          Resource: arn:aws:dynamodb:us-east-1:804450215614:table/RedebanTokens
         - Effect: Allow
           Action:
           - secretsmanager:GetSecretValue
@@ -79,21 +75,6 @@ Resources:
         AllowMethods: '''GET, OPTIONS'''
         AllowHeaders: '''Content-Type,Authorization'''
         AllowOrigin: '''*'''
-  RedebanTokensTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName:
-        Fn::Sub: RedebanTokens-${Environment}
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-      - AttributeName: id
-        AttributeType: S
-      KeySchema:
-      - AttributeName: id
-        KeyType: HASH
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
 Outputs:
   ApiUrl:
     Description: API Gateway URL

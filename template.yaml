@@ -21,20 +21,18 @@ Globals:
         LOG_LEVEL: INFO
 
 Resources:
-  # Lambda Function
+  # Lambda Principal
   RedebanCommerceFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "redeban-commerce-lookup-${Environment}"
       CodeUri: src/
       Handler: app.lambda_handler
-
       Environment:
         Variables:
-          DYNAMODB_TABLE: !Ref RedebanTokensTable
+          DYNAMODB_TABLE: RedebanTokens
           SECRET_NAME: "Redeban_Obtener_Token"
           TOKEN_LAMBDA_NAME: "lambda_function_obtener_token"
-
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -43,7 +41,7 @@ Resources:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
                 - dynamodb:UpdateItem
-              Resource: !GetAtt RedebanTokensTable.Arn
+              Resource: arn:aws:dynamodb:us-east-1:804450215614:table/RedebanTokens
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
@@ -52,7 +50,6 @@ Resources:
               Action:
                 - lambda:InvokeFunction
               Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:lambda_function_obtener_token"
-
       Events:
         Api:
           Type: Api
@@ -71,22 +68,6 @@ Resources:
         AllowMethods: "'GET, OPTIONS'"
         AllowHeaders: "'Content-Type,Authorization'"
         AllowOrigin: "'*'"
-
-  # DynamoDB Table
-  RedebanTokensTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: !Sub "RedebanTokens-${Environment}"
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: id
-          AttributeType: S
-      KeySchema:
-        - AttributeName: id
-          KeyType: HASH
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
 
 Outputs:
   ApiUrl:

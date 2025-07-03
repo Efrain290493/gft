@@ -1,305 +1,343 @@
+"""
+AWS Service integration layer for Redeban KYC Lambda.
+
+This module provides a centralized interface for all AWS service operations:
+- SSL certificate retrieval from Secrets Manager
+- Token management with DynamoDB
+- Lambda function invocation for token refresh
+- Error handling and retry logic
+
+Author: DevSecOps Team
+Version: 1.0.0
+"""
+
 import boto3
 import json
 import base64
 import os
 from datetime import datetime, timedelta
+from typing import Tuple, Dict, Any, Optional
 from botocore.exceptions import ClientError
-from utils.logger import setup_logger
-logger = setup_logger()
+from utils.logger import setup_logger, log_function_call
+
+logger = setup_logger(__name__)
 
 
 class AWSService:
     """
-    Clase que maneja todas las operaciones con servicios AWS
-    Esta clase encapsula la lógica para:
-    - Obtener certificados desde Secrets Manager
-    - Gestionar tokens en DynamoDB
-    - Invocar otras funciones Lambda
+    AWS services integration class.
+    
+    Provides unified access to:
+    - AWS Secrets Manager for certificate retrieval
+    - DynamoDB for token storage and retrieval
+    - Lambda for token refresh operations
     """
-
+    
     def __init__(self):
-        """Inicializa la clase con configuración y clientes AWS"""
-        # Configuración desde variables de entorno
+        """Initialize AWS service clients and configuration."""
+        # Configuration from environment variables
         self.region = os.getenv('AWS_REGION', 'us-east-1')
         self.dynamodb_table = os.getenv('DYNAMODB_TABLE', 'RedebanTokens')
         self.secret_name = os.getenv('SECRET_NAME', 'Redeban_Obtener_Token')
         self.token_lambda_name = os.getenv('TOKEN_LAMBDA_NAME', 'lambda_function_obtener_token')
-
-        # Inicializar clientes AWS (se reutilizan entre invocaciones)
+        
+        # Initialize AWS clients (reused across invocations)
         self.secrets_client = boto3.client('secretsmanager', region_name=self.region)
         self.dynamodb = boto3.resource('dynamodb', region_name=self.region)
         self.lambda_client = boto3.client('lambda', region_name=self.region)
-
-        # Referencia a la tabla DynamoDB
+        
+        # DynamoDB table reference
         self.table = self.dynamodb.Table(self.dynamodb_table)
-
-        logger.info(f"AWSService inicializado - Región: {self.region}, Tabla: {self.dynamodb_table}")
-
-    def get_certificates(self):
+        
+        logger.info(f"AWSService initialized - Region: {self.region}, Table: {self.dynamodb_table}")
+    
+    @log_function_call
+    def get_certificates(self) -> Tuple[str, str]:
         """
-        Obtiene los certificados desde AWS Secrets Manager y los guarda en /tmp
-
+        Retrieve SSL certificates from AWS Secrets Manager.
+        
+        Downloads base64-encoded certificates and saves them to /tmp directory
+        with appropriate file permissions for secure access.
+        
         Returns:
-            tuple: (cert_path, key_path) - Rutas a los archivos de certificado
-
+            Tuple of (certificate_path, private_key_path)
+            
         Raises:
-            Exception: Si no se pueden obtener o procesar los certificados
+            Exception: If certificates cannot be retrieved or processed
         """
         try:
-            logger.info(f"Obteniendo certificados desde Secrets Manager: {self.secret_name}")
-
-            # Obtener el secret desde AWS
+            logger.info(f"Retrieving certificates from Secrets Manager: {self.secret_name}")
+            
+            # Get secret value from AWS
             response = self.secrets_client.get_secret_value(SecretId=self.secret_name)
-
+            
             if 'SecretString' not in response:
-                raise Exception(f"Secret {self.secret_name} no contiene SecretString")
-
-            # Parsear el JSON del secret
+                raise Exception(f"Secret {self.secret_name} does not contain SecretString")
+            
+            # Parse JSON secret content
             secret_dict = json.loads(response['SecretString'])
-
-            # Validar que tenga las claves necesarias
+            
+            # Validate required keys
             required_keys = ['redeban_crt', 'redeban_key']
             for key in required_keys:
                 if key not in secret_dict:
-                    raise Exception(f"Secret no contiene la clave requerida: {key}")
+                    raise Exception(f"Secret missing required key: {key}")
                 if not secret_dict[key]:
-                    raise Exception(f"Valor vacío para la clave: {key}")
-
-            # Rutas donde guardar los certificados en /tmp
+                    raise Exception(f"Empty value for key: {key}")
+            
+            # File paths in Lambda /tmp directory
             cert_path = "/tmp/redeban.crt"
             key_path = "/tmp/redeban.key"
-
-            # Decodificar y guardar certificado
+            
+            # Decode and save certificate
             try:
                 cert_data = base64.b64decode(secret_dict["redeban_crt"])
                 with open(cert_path, "wb") as cert_file:
                     cert_file.write(cert_data)
-
-                # Establecer permisos restrictivos
-                os.chmod(cert_path, 0o600)
-
+                os.chmod(cert_path, 0o600)  # Secure permissions
+                
             except Exception as e:
-                raise Exception(f"Error decodificando/guardando certificado: {str(e)}")
-
-            # Decodificar y guardar llave privada
+                raise Exception(f"Error processing certificate: {str(e)}")
+            
+            # Decode and save private key
             try:
                 key_data = base64.b64decode(secret_dict["redeban_key"])
                 with open(key_path, "wb") as key_file:
                     key_file.write(key_data)
-
-                # Establecer permisos restrictivos
-                os.chmod(key_path, 0o600)
-
+                os.chmod(key_path, 0o600)  # Secure permissions
+                
             except Exception as e:
-                raise Exception(f"Error decodificando/guardando llave privada: {str(e)}")
-
-            # Validar que los archivos existen y tienen contenido
+                raise Exception(f"Error processing private key: {str(e)}")
+            
+            # Validate files were created successfully
             if not os.path.exists(cert_path) or os.path.getsize(cert_path) == 0:
-                raise Exception("Archivo de certificado vacío o no creado")
-
+                raise Exception("Certificate file empty or not created")
+            
             if not os.path.exists(key_path) or os.path.getsize(key_path) == 0:
-                raise Exception("Archivo de llave privada vacío o no creado")
-
-            logger.info("Certificados obtenidos y guardados exitosamente")
+                raise Exception("Private key file empty or not created")
+            
+            logger.info("Certificates retrieved and saved successfully")
             return cert_path, key_path
-
+            
         except ClientError as e:
             error_code = e.response['Error']['Code']
-            if error_code == 'ResourceNotFoundException':
-                raise Exception(f"Secret no encontrado: {self.secret_name}")
-            elif error_code == 'AccessDeniedException':
-                raise Exception(f"Acceso denegado al secret: {self.secret_name}")
-            elif error_code == 'InvalidRequestException':
-                raise Exception(f"Solicitud inválida para secret: {self.secret_name}")
-            else:
-                raise Exception(f"Error de AWS Secrets Manager ({error_code}): {str(e)}")
-
+            error_messages = {
+                'ResourceNotFoundException': f"Secret not found: {self.secret_name}",
+                'AccessDeniedException': f"Access denied to secret: {self.secret_name}",
+                'InvalidRequestException': f"Invalid request for secret: {self.secret_name}"
+            }
+            raise Exception(error_messages.get(error_code, f"AWS Secrets Manager error ({error_code}): {str(e)}"))
+            
         except json.JSONDecodeError as e:
-            raise Exception(f"Error parseando JSON del secret: {str(e)}")
-
+            raise Exception(f"Error parsing secret JSON: {str(e)}")
+            
         except Exception as e:
-            logger.error(f"Error obteniendo certificados: {str(e)}")
-            raise Exception(f"No se pudieron obtener los certificados: {str(e)}")
-
-    def get_valid_token(self):
+            logger.error(f"Error retrieving certificates: {str(e)}")
+            raise Exception(f"Failed to retrieve certificates: {str(e)}")
+    
+    @log_function_call
+    def get_valid_token(self) -> str:
         """
-        Obtiene un token válido desde DynamoDB.
-        Si no existe o está expirado, solicita uno nuevo.
-
+        Retrieve a valid authentication token from DynamoDB.
+        
+        Checks for existing token and validates expiration time.
+        If no valid token exists, requests a new one via Lambda invocation.
+        
         Returns:
-            str: Token de autenticación válido
-
+            Valid authentication token string
+            
         Raises:
-            Exception: Si no se puede obtener un token válido
+            Exception: If no valid token can be obtained
         """
         try:
-            logger.info("Buscando token existente en DynamoDB")
-
-            # Buscar token existente en DynamoDB
-            response = self.table.get_item(Key={'id': 'redeban_token'})
-
+            logger.info("Checking for existing token in DynamoDB")
+            
+            # Query for existing token
+            response = self.table.get_item(Key={'id': 'token'})
+            
             if 'Item' in response:
                 token_item = response['Item']
-                logger.info("Token encontrado en DynamoDB, verificando validez")
-
-                # Verificar si el token aún es válido
+                logger.info("Token found in DynamoDB, validating")
+                
+                # Check if token is still valid
                 if self._is_token_valid(token_item):
-                    logger.info("Token válido encontrado en DynamoDB")
-                    return token_item['token']
+                    logger.info("Valid token found in DynamoDB")
+                    return token_item['access_token']
                 else:
-                    logger.info("Token encontrado pero expirado")
+                    logger.info("Token found but expired")
             else:
-                logger.info("No se encontró token en DynamoDB")
-
-            # Si llegamos aquí, necesitamos un nuevo token
-            logger.info("Solicitando nuevo token")
+                logger.info("No token found in DynamoDB")
+            
+            # Request new token if needed
+            logger.info("Requesting new token")
             return self._request_new_token()
-
+            
         except ClientError as e:
             error_code = e.response['Error']['Code']
-            if error_code == 'ResourceNotFoundException':
-                raise Exception(f"Tabla DynamoDB no encontrada: {self.dynamodb_table}")
-            elif error_code == 'AccessDeniedException':
-                raise Exception(f"Acceso denegado a tabla DynamoDB: {self.dynamodb_table}")
-            else:
-                raise Exception(f"Error de DynamoDB ({error_code}): {str(e)}")
-
+            error_messages = {
+                'ResourceNotFoundException': f"DynamoDB table not found: {self.dynamodb_table}",
+                'AccessDeniedException': f"Access denied to DynamoDB table: {self.dynamodb_table}"
+            }
+            raise Exception(error_messages.get(error_code, f"DynamoDB error ({error_code}): {str(e)}"))
+            
         except Exception as e:
-            logger.error(f"Error obteniendo token: {str(e)}")
-            raise Exception(f"No se pudo obtener token válido: {str(e)}")
-
-    def _is_token_valid(self, token_item):
+            logger.error(f"Error obtaining token: {str(e)}")
+            raise Exception(f"Failed to obtain valid token: {str(e)}")
+    
+    def _is_token_valid(self, token_item: Dict[str, Any]) -> bool:
         """
-        Verifica si un token aún es válido
-
+        Validate if a token is still valid and not expired.
+        
         Args:
-            token_item (dict): Item de DynamoDB con información del token
-
+            token_item: DynamoDB item containing token information
+            
         Returns:
-            bool: True si el token es válido, False si no
+            True if token is valid, False otherwise
         """
         try:
-            # Verificar que tenga los campos necesarios
-            if 'expires_at' not in token_item:
-                logger.warning("Token sin campo expires_at")
+            # Check if token value exists
+            if 'access_token' not in token_item or not token_item['access_token']:
+                logger.warning("Token missing access_token value")
                 return False
-
-            if 'token' not in token_item or not token_item['token']:
-                logger.warning("Token sin valor")
-                return False
-
-            # Convertir string a datetime
-            expires_at_str = token_item['expires_at']
-
-            # Manejar diferentes formatos de fecha
-            try:
-                if expires_at_str.endswith('Z'):
-                    expires_at = datetime.fromisoformat(expires_at_str[:-1])
-                else:
-                    expires_at = datetime.fromisoformat(expires_at_str)
-            except ValueError:
-                logger.warning(f"Formato de fecha inválido: {expires_at_str}")
-                return False
-
-            # Obtener tiempo actual
-            now = datetime.utcnow()
-
-            # Dar un margen de seguridad de 5 minutos antes de que expire
-            safety_margin = timedelta(minutes=5)
-            effective_expiry = expires_at - safety_margin
-
-            is_valid = now < effective_expiry
-
-            if is_valid:
-                logger.info(f"Token válido hasta: {expires_at} (margen aplicado)")
+            
+            # Calculate expiration based on expires_in and saved date
+            if 'expires_in' in token_item and 'fecha_guardado' in token_item:
+                try:
+                    # Parse saved date
+                    saved_date_str = token_item['fecha_guardado']
+                    saved_date = datetime.fromisoformat(saved_date_str)
+                    
+                    # Calculate expiration time
+                    expires_in_seconds = int(token_item['expires_in'])
+                    expires_at = saved_date + timedelta(seconds=expires_in_seconds)
+                    
+                    # Current time with safety margin
+                    now = datetime.utcnow()
+                    safety_margin = timedelta(minutes=5)
+                    effective_expiry = expires_at - safety_margin
+                    
+                    is_valid = now < effective_expiry
+                    
+                    if is_valid:
+                        logger.info(f"Token valid until: {expires_at} (with safety margin)")
+                    else:
+                        logger.info(f"Token expired. Expires: {expires_at}, Now: {now}")
+                    
+                    return is_valid
+                    
+                except Exception as e:
+                    logger.warning(f"Error calculating token expiration: {str(e)}")
+                    return True  # Assume valid if calculation fails
+            
+            # Handle legacy expires_at format
+            elif 'expires_at' in token_item:
+                expires_at_str = token_item['expires_at']
+                
+                try:
+                    expires_at = datetime.fromisoformat(expires_at_str.rstrip('Z'))
+                    now = datetime.utcnow()
+                    safety_margin = timedelta(minutes=5)
+                    effective_expiry = expires_at - safety_margin
+                    
+                    is_valid = now < effective_expiry
+                    
+                    if is_valid:
+                        logger.info(f"Token valid until: {expires_at} (with safety margin)")
+                    else:
+                        logger.info(f"Token expired. Expires: {expires_at}, Now: {now}")
+                    
+                    return is_valid
+                    
+                except ValueError:
+                    logger.warning(f"Invalid date format: {expires_at_str}")
+                    return False
+            
             else:
-                logger.info(f"Token expirado o cerca de expirar. Expira: {expires_at}, Ahora: {now}")
-
-            return is_valid
-
+                # No expiration info, assume valid
+                logger.info("Token has no expiration info, assuming valid")
+                return True
+                
         except Exception as e:
-            logger.error(f"Error verificando validez del token: {str(e)}")
+            logger.error(f"Error validating token: {str(e)}")
             return False
-
-    def _request_new_token(self):
+    
+    def _request_new_token(self) -> str:
         """
-        Solicita un nuevo token invocando la lambda correspondiente
-
+        Request a new token by invoking the token Lambda function.
+        
         Returns:
-            str: Nuevo token obtenido
-
+            New authentication token string
+            
         Raises:
-            Exception: Si no se puede obtener el nuevo token
+            Exception: If token cannot be obtained
         """
         try:
-            logger.info(f"Invocando lambda de token: {self.token_lambda_name}")
-
-            # Invocar la lambda que obtiene tokens
+            logger.info(f"Invoking token Lambda: {self.token_lambda_name}")
+            
+            # Invoke token retrieval Lambda
             response = self.lambda_client.invoke(
                 FunctionName=self.token_lambda_name,
-                InvocationType='RequestResponse',  # Síncrono
-                Payload=json.dumps({})  # Payload vacío
+                InvocationType='RequestResponse',  # Synchronous invocation
+                Payload=json.dumps({})
             )
-
-            # Verificar respuesta de la invocación
+            
+            # Check invocation status
             if response['StatusCode'] != 200:
-                raise Exception(f"Error invocando lambda de token. Status: {response['StatusCode']}")
-
-            # Verificar si hay errores en la ejecución
+                raise Exception(f"Token Lambda invocation failed. Status: {response['StatusCode']}")
+            
+            # Check for function errors
             if 'FunctionError' in response:
-                error_details = "Error no especificado"
+                error_details = "Unspecified error"
                 if 'Payload' in response:
                     try:
                         payload = json.loads(response['Payload'].read().decode('utf-8'))
                         error_details = payload.get('errorMessage', error_details)
                     except:
                         pass
-                raise Exception(f"Error en lambda de token: {error_details}")
-
-            logger.info("Lambda de token invocada exitosamente")
-
-            # Esperar un momento para que la lambda guarde el token
+                raise Exception(f"Token Lambda error: {error_details}")
+            
+            logger.info("Token Lambda invoked successfully")
+            
+            # Wait for token to be saved to DynamoDB
             import time
             time.sleep(2)
-
-            # Intentar obtener el token varias veces (retry)
+            
+            # Retry token retrieval
             max_attempts = 3
             for attempt in range(max_attempts):
                 try:
-                    logger.info(f"Buscando nuevo token en DynamoDB (intento {attempt + 1})")
-
-                    response = self.table.get_item(Key={'id': 'redeban_token'})
-
-                    if 'Item' in response and 'token' in response['Item']:
-                        token_value = response['Item']['token']
-                        if token_value:  # Verificar que no esté vacío
-                            logger.info("Nuevo token obtenido exitosamente")
+                    logger.info(f"Searching for new token in DynamoDB (attempt {attempt + 1})")
+                    
+                    response = self.table.get_item(Key={'id': 'token'})
+                    
+                    if 'Item' in response and 'access_token' in response['Item']:
+                        token_value = response['Item']['access_token']
+                        if token_value:
+                            logger.info("New token obtained successfully")
                             return token_value
-
+                    
                     if attempt < max_attempts - 1:
-                        logger.warning(f"Token no encontrado, reintentando en 1 segundo...")
+                        logger.warning("Token not found, retrying in 1 second...")
                         time.sleep(1)
-
+                        
                 except ClientError as e:
-                    logger.error(f"Error consultando DynamoDB: {str(e)}")
+                    logger.error(f"DynamoDB query error: {str(e)}")
                     if attempt < max_attempts - 1:
                         time.sleep(1)
                     else:
                         raise
-
-            raise Exception("Token no encontrado después de invocar lambda y reintentos")
-
+            
+            raise Exception("Token not found after Lambda invocation and retries")
+            
         except ClientError as e:
             error_code = e.response['Error']['Code']
-            if error_code == 'ResourceNotFoundException':
-                raise Exception(f"Lambda de token no encontrada: {self.token_lambda_name}")
-            elif error_code == 'InvalidParameterValueException':
-                raise Exception(f"Parámetros inválidos para lambda: {self.token_lambda_name}")
-            elif error_code == 'TooManyRequestsException':
-                raise Exception(f"Límite de invocaciones excedido para: {self.token_lambda_name}")
-            else:
-                raise Exception(f"Error de AWS Lambda ({error_code}): {str(e)}")
-
+            error_messages = {
+                'ResourceNotFoundException': f"Token Lambda not found: {self.token_lambda_name}",
+                'InvalidParameterValueException': f"Invalid parameters for Lambda: {self.token_lambda_name}",
+                'TooManyRequestsException': f"Invocation limit exceeded for: {self.token_lambda_name}"
+            }
+            raise Exception(error_messages.get(error_code, f"AWS Lambda error ({error_code}): {str(e)}"))
+            
         except Exception as e:
-            logger.error(f"Error solicitando nuevo token: {str(e)}")
-            raise Exception(f"No se pudo obtener nuevo token: {str(e)}")
+            logger.error(f"Error requesting new token: {str(e)}")
+            raise Exception(f"Failed to obtain new token: {str(e)}")

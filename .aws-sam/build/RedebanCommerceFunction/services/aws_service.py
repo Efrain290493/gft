@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta
 from botocore.exceptions import ClientError
 from utils.logger import setup_logger
+
 logger = setup_logger()
 
 
@@ -135,8 +136,8 @@ class AWSService:
         try:
             logger.info("Buscando token existente en DynamoDB")
 
-            # Buscar token existente en DynamoDB
-            response = self.table.get_item(Key={'id': 'redeban_token'})
+        
+            response = self.table.get_item(Key={'id': 'token'})
 
             if 'Item' in response:
                 token_item = response['Item']
@@ -145,7 +146,8 @@ class AWSService:
                 # Verificar si el token aún es válido
                 if self._is_token_valid(token_item):
                     logger.info("Token válido encontrado en DynamoDB")
-                    return token_item['token']
+                    # CAMBIO: Usar 'access_token' en lugar de 'token'
+                    return token_item['access_token']
                 else:
                     logger.info("Token encontrado pero expirado")
             else:
@@ -179,43 +181,76 @@ class AWSService:
             bool: True si el token es válido, False si no
         """
         try:
-            # Verificar que tenga los campos necesarios
-            if 'expires_at' not in token_item:
-                logger.warning("Token sin campo expires_at")
+            # CAMBIO: Verificar que tenga 'access_token' en lugar de 'token'
+            if 'access_token' not in token_item or not token_item['access_token']:
+                logger.warning("Token sin valor de access_token")
                 return False
 
-            if 'token' not in token_item or not token_item['token']:
-                logger.warning("Token sin valor")
-                return False
+            # Si hay expires_in y fecha_guardado, calcular expiración
+            if 'expires_in' in token_item and 'fecha_guardado' in token_item:
+                try:
+                    # Parsear fecha de guardado
+                    fecha_guardado_str = token_item['fecha_guardado']
+                    fecha_guardado = datetime.fromisoformat(fecha_guardado_str)
+                    
+                    # Calcular fecha de expiración
+                    expires_in_seconds = int(token_item['expires_in'])
+                    expires_at = fecha_guardado + timedelta(seconds=expires_in_seconds)
+                    
+                    # Obtener tiempo actual
+                    now = datetime.utcnow()
+                    
+                    # Dar un margen de seguridad de 5 minutos antes de que expire
+                    safety_margin = timedelta(minutes=5)
+                    effective_expiry = expires_at - safety_margin
+                    
+                    is_valid = now < effective_expiry
+                    
+                    if is_valid:
+                        logger.info(f"Token válido hasta: {expires_at} (margen aplicado)")
+                    else:
+                        logger.info(f"Token expirado o cerca de expirar. Expira: {expires_at}, Ahora: {now}")
+                    
+                    return is_valid
+                    
+                except Exception as e:
+                    logger.warning(f"Error calculando expiración del token: {str(e)}")
+                    # Si no se puede calcular la expiración, asumir que es válido por seguridad
+                    return True
+            
+            # Si hay expires_at (formato anterior), usarlo
+            elif 'expires_at' in token_item:
+                expires_at_str = token_item['expires_at']
+                
+                try:
+                    if expires_at_str.endswith('Z'):
+                        expires_at = datetime.fromisoformat(expires_at_str[:-1])
+                    else:
+                        expires_at = datetime.fromisoformat(expires_at_str)
+                except ValueError:
+                    logger.warning(f"Formato de fecha inválido: {expires_at_str}")
+                    return False
 
-            # Convertir string a datetime
-            expires_at_str = token_item['expires_at']
+                # Obtener tiempo actual
+                now = datetime.utcnow()
 
-            # Manejar diferentes formatos de fecha
-            try:
-                if expires_at_str.endswith('Z'):
-                    expires_at = datetime.fromisoformat(expires_at_str[:-1])
+                # Dar un margen de seguridad de 5 minutos antes de que expire
+                safety_margin = timedelta(minutes=5)
+                effective_expiry = expires_at - safety_margin
+
+                is_valid = now < effective_expiry
+
+                if is_valid:
+                    logger.info(f"Token válido hasta: {expires_at} (margen aplicado)")
                 else:
-                    expires_at = datetime.fromisoformat(expires_at_str)
-            except ValueError:
-                logger.warning(f"Formato de fecha inválido: {expires_at_str}")
-                return False
+                    logger.info(f"Token expirado o cerca de expirar. Expira: {expires_at}, Ahora: {now}")
 
-            # Obtener tiempo actual
-            now = datetime.utcnow()
-
-            # Dar un margen de seguridad de 5 minutos antes de que expire
-            safety_margin = timedelta(minutes=5)
-            effective_expiry = expires_at - safety_margin
-
-            is_valid = now < effective_expiry
-
-            if is_valid:
-                logger.info(f"Token válido hasta: {expires_at} (margen aplicado)")
+                return is_valid
+            
             else:
-                logger.info(f"Token expirado o cerca de expirar. Expira: {expires_at}, Ahora: {now}")
-
-            return is_valid
+                # Si no hay información de expiración, asumir que es válido
+                logger.info("Token sin información de expiración, asumiendo válido")
+                return True
 
         except Exception as e:
             logger.error(f"Error verificando validez del token: {str(e)}")
@@ -268,10 +303,11 @@ class AWSService:
                 try:
                     logger.info(f"Buscando nuevo token en DynamoDB (intento {attempt + 1})")
 
-                    response = self.table.get_item(Key={'id': 'redeban_token'})
+                    # CAMBIO: Buscar con id = 'token' y campo 'access_token'
+                    response = self.table.get_item(Key={'id': 'token'})
 
-                    if 'Item' in response and 'token' in response['Item']:
-                        token_value = response['Item']['token']
+                    if 'Item' in response and 'access_token' in response['Item']:
+                        token_value = response['Item']['access_token']
                         if token_value:  # Verificar que no esté vacío
                             logger.info("Nuevo token obtenido exitosamente")
                             return token_value
